@@ -12,11 +12,20 @@ import gflownet.models.mxmnet as mxmnet
 from gflownet import GFNTask, LogScalar, ObjectProperties
 from gflownet.config import Config, init_empty
 from gflownet.data.qm9 import QM9Dataset
-from gflownet.envs.mol_building_env import MolBuildingEnvContext
+from gflownet.envs.mol_building_env import MolBuildingEnvContext, Graph
 from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.misc import get_worker_device
 from gflownet.utils.transforms import to_logreward
+
+import igraph as ig
+
+
+def count_automorphisms(graph: Graph):
+    node_color = [hash(str(sorted(attr.items()))) for _, attr in sorted(graph.nodes(data=True))]
+    edge_color = [hash(str(sorted(attr.items()))) for _, _, attr in sorted(graph.edges(data=True))]
+    g = ig.Graph(len(graph), graph.edges())
+    return g.count_automorphisms_vf2(color=node_color, edge_color=edge_color)
 
 
 class QM9GapTask(GFNTask):
@@ -38,6 +47,7 @@ class QM9GapTask(GFNTask):
         self._min, self._max, self._percentile_95 = self.dataset.get_stats("gap", percentile=0.05)  # type: ignore
         self._width = self._max - self._min
         self._rtrans = "unit+95p"  # TODO: hyperparameter
+        self.correct_automorphism = cfg.task.qm9.correct_automorphism
 
     def reward_transform(self, y: Union[float, Tensor]) -> ObjectProperties:
         """Transforms a target quantity y (e.g. the LUMO energy in QM9) to a positive reward scalar"""
@@ -99,13 +109,17 @@ class QM9GapTask(GFNTask):
         )
         return preds
 
-    def compute_obj_properties(self, mols: List[RDMol]) -> Tuple[ObjectProperties, Tensor]:
+    def compute_obj_properties(self, mols: List[RDMol], nx_graphs: List[Graph]) -> Tuple[ObjectProperties, Tensor]:
         graphs = [mxmnet.mol2graph(i) for i in mols]  # type: ignore[attr-defined]
         is_valid = torch.tensor([i is not None for i in graphs]).bool()
         if not is_valid.any():
             return ObjectProperties(torch.zeros((0, 1))), is_valid
 
-        preds = self.compute_reward_from_graph(graphs).reshape((-1, 1))
+        preds = self.compute_reward_from_graph(graphs)
+        if self.correct_automorphism:
+            auts = torch.tensor([count_automorphisms(nx_graphs[i]) for i, g in enumerate(graphs) if g is not None], dtype=torch.float)
+            preds = preds * auts
+        preds = preds.reshape((-1, 1))
         assert len(preds) == is_valid.sum()
         return ObjectProperties(preds), is_valid
 
@@ -121,7 +135,7 @@ class QM9GapTrainer(StandardOnlineTrainer):
         cfg.opt.lr_decay = 20000
         cfg.opt.clip_grad_type = "norm"
         cfg.opt.clip_grad_param = 10
-        cfg.algo.max_nodes = 9
+        cfg.algo.max_nodes = 10
         cfg.algo.num_from_policy = 32
         cfg.algo.num_from_dataset = 32
         cfg.algo.train_random_action_prob = 0.001
@@ -139,6 +153,7 @@ class QM9GapTrainer(StandardOnlineTrainer):
             expl_H_range=[0, 1, 2, 3],
             num_cond_dim=self.task.num_cond_dim,
             allow_5_valence_nitrogen=True,
+            max_nodes=9
         )
         # Note: we only need the allow_5_valence_nitrogen flag because of how we generate trajectories
         # from the dataset. For example, consider tue Nitrogen atom in this: C[NH+](C)C, when s=CN(C)C, if the action

@@ -239,10 +239,11 @@ class DataSource(IterableDataset):
         valid_idcs = torch.tensor([i for i in range(len(trajs)) if trajs[i].get("is_valid", True)]).long()
         # fetch the valid trajectories endpoints
         objs = [self.ctx.graph_to_obj(trajs[i]["result"]) for i in valid_idcs]
+        graphs = [trajs[i]["result"] for i in valid_idcs]
         # ask the task to compute their reward
         # TODO: it's really weird that the task is responsible for this and returns a obj_props
         # tensor whose first dimension is possibly not the same as the output???
-        obj_props, m_is_valid = self.task.compute_obj_properties(objs)
+        obj_props, m_is_valid = self.task.compute_obj_properties(objs, graphs)
         assert obj_props.ndim == 2, "FlatRewards should be (mbsize, n_objectives), even if n_objectives is 1"
         # The task may decide some of the objs are invalid, we have to again filter those
         valid_idcs = valid_idcs[m_is_valid]

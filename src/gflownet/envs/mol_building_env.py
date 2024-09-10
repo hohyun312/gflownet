@@ -352,7 +352,7 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
         edge_index = np.array([e for i, j in g.edges for e in [(i, j), (j, i)]]).reshape((-1, 2)).T.astype(np.int64)
 
         if self.max_edges is not None and len(g.edges) >= self.max_edges:
-            non_edge_index = np.zeros((2, 0), dtype=np.int64)
+            non_edge_index = np.zeros((0, 2), dtype=np.int64)
         else:
             edges = set(g.edges)
             non_edge_index = np.array(
